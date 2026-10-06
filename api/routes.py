@@ -6402,19 +6402,28 @@ def _login_client_ip(handler) -> str:
 
     When both X-Forwarded-For and X-Real-IP are present they must resolve to the
     same address. Otherwise the proxy is passing the client's own
-    X-Forwarded-For through and the client could pick its bucket. Fall back to
-    the raw peer whenever they differ or a value is not an IP address.
+    X-Forwarded-For through and the client could pick its bucket. Every field
+    of both headers is checked, as the resolver reads them all: fall back to the
+    raw peer when they differ, a field is empty, X-Real-IP is repeated with
+    different values, or a value is not an IP address.
     """
     import ipaddress
+
+    def _fields(name):
+        try:
+            return [str(v) for v in handler.headers.get_all(name) or []]
+        except AttributeError:
+            single = handler.headers.get(name)
+            return [single] if single is not None else []
 
     if _truthy_env("HERMES_WEBUI_TRUST_FORWARDED_FOR"):
         try:
             peer = ipaddress.ip_address(_request_client_ip(handler))
             if _ip_in_networks(peer, _trusted_proxy_networks(include_loopback=False)):
                 client = ipaddress.ip_address(_forwarded_client_ip_from_trusted_proxy(handler))
-                xff = handler.headers.get("X-Forwarded-For")
-                real_ip = handler.headers.get("X-Real-IP", "").strip()
-                if not (xff and real_ip) or client == ipaddress.ip_address(real_ip):
+                xff = _fields("X-Forwarded-For")
+                real_ips = {ipaddress.ip_address(v.strip()) for v in _fields("X-Real-IP")}
+                if all(v.strip() for v in xff) and real_ips <= {client}:
                     return str(client)
         except ValueError:
             pass

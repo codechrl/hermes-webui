@@ -22,7 +22,8 @@ class _Handler:
         self.client_address = (peer, 12345)
         self.headers = http.client.HTTPMessage()
         self.headers["Content-Length"] = "0"
-        for key, value in headers.items():
+        # A list of pairs sends repeated header fields.
+        for key, value in headers.items() if isinstance(headers, dict) else headers:
             self.headers[key] = value
         self.rfile = io.BytesIO(b"")
         self.wfile = io.BytesIO()
@@ -110,6 +111,27 @@ def test_rotating_xff_with_fixed_real_ip_keys_on_socket_peer(path, real_ip, monk
 
     headers = {"X-Forwarded-For": "203.0.113.99", "X-Real-IP": real_ip}
     assert _login(path, "10.0.0.5", headers) == 429
+
+
+@pytest.mark.parametrize("path", LOGIN_PATHS)
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # Empty first X-Forwarded-For field, rotating second one.
+        lambda i: [("X-Forwarded-For", ""), ("X-Forwarded-For", f"203.0.113.{i}"), ("X-Real-IP", "198.51.100.9")],
+        # Repeated X-Real-IP fields that disagree.
+        lambda i: [("X-Forwarded-For", f"203.0.113.{i}"), ("X-Real-IP", f"203.0.113.{i}"), ("X-Real-IP", "198.51.100.9")],
+        lambda i: [("X-Real-IP", f"203.0.113.{i}"), ("X-Real-IP", "198.51.100.9")],
+    ],
+)
+def test_repeated_forwarded_fields_key_on_socket_peer(path, fields, monkeypatch):
+    # The agreement check must see every field the resolver reads.
+    monkeypatch.setenv("HERMES_WEBUI_TRUST_FORWARDED_FOR", "1")
+    monkeypatch.setenv("HERMES_WEBUI_TRUSTED_PROXY_CIDRS", "10.0.0.5/32")
+    for i in range(auth._LOGIN_MAX_ATTEMPTS):
+        assert _login(path, "10.0.0.5", fields(i)) == 401
+
+    assert _login(path, "10.0.0.5", fields(99)) == 429
 
 
 @pytest.mark.parametrize("path", LOGIN_PATHS)
